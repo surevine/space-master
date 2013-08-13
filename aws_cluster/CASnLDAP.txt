@@ -1,0 +1,11 @@
+#!/bin/sh
+/usr/bin/wget http://10.66.2.10/btb/btb.sh
+if [ $? == 0 ]; then sh /btb.sh setup CAS <<EOF
+localhost
+EOF
+else
+stat=$?
+echo "+++++++BTB of CAS FAILED!!++++++++"
+echo "+++++++WGET returned $stat +++++++"
+fi
+if [ -f ~/btb/btb.sh ]; then sh ~/btb/btb.sh setup ldap ; fi

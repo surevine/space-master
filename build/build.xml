@@ -1,0 +1,312 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="Alfresco Integration Jenkins Build" default="package" basedir="." xmlns:artifact="antlib:org.apache.maven.artifact.ant">
+
+	<!-- Jenkins environment variables -->
+	<property environment="env" />
+
+	<taskdef name="start" classname="org.apache.catalina.ant.StartTask" />
+	<taskdef name="stop" classname="org.apache.catalina.ant.StopTask" />
+	<taskdef name="deploy" classname="org.apache.catalina.ant.DeployTask" />
+	<taskdef name="undeploy" classname="org.apache.catalina.ant.UndeployTask" />
+	<!-- For the conditional tasks -->
+	<taskdef resource="net/sf/antcontrib/antlib.xml" />
+
+	<property name="project.dir" value=".." />
+
+	<property name="maven.repo.local" value="${user.home}/.m2/repository" />
+
+	<!-- Maven POM file -->
+	<property name="pom.file" value="pom.xml" />
+
+	<!-- Bring in the pom which defines the dependencies -->
+	<artifact:pom file="${pom.file}" id="pom">
+		<localRepository path="${maven.repo.local}" />
+	</artifact:pom>
+
+	<!-- Now assign the dependencies to a fileset so that they can be referenced -->
+	<artifact:dependencies filesetId="dependency.fileset" pomRefId="pom" versionsId="dependency.versions">
+		<localRepository path="${maven.repo.local}" />
+	</artifact:dependencies>
+
+	<!-- Make all of the jars available in a path ref. -->
+	<artifact:dependencies pathId="dependency.classpath" pomRefId="pom" type="jar">
+		<localRepository path="${maven.repo.local}" />
+	</artifact:dependencies>
+
+	<xmlproperty file="${pom.file}" />
+
+	<property name="repo.esl.module.artifactId" value="repo.esl.module.amp" />
+	<property name="share.esl.module.artifactId" value="share.esl.module.amp" />
+	<property name="repo.dod5015.module.artifactId" value="alfresco-dod5015.amp" />
+	<property name="share.dod5015.module.artifactId" value="alfresco-dod5015-share.amp" />
+	<property name="repo.module.artifactId" value="alfresco.war" />
+	<property name="share.module.artifactId" value="share.war" />
+	<property name="svtheme.module.artifactId" value="svthememodule.amp" />
+	<property name="svthemerepo.module.artifactId" value="svthemerepomodule.amp" />
+	<property name="repo.module.artifactId" value="alfresco.war" />
+	<property name="share.module.artifactId" value="share.war" />
+	<property name="gsaconnector.module.artifactId" value="gsa-connector.jar" />
+
+	<property name="lib.dir" location="${basedir}/lib" />
+
+	<property name="target.dir" location="${basedir}/target" />
+
+	<!-- Root SVN URL for this module -->
+	<property name="svn.url" value="https://svn.surevine.net/integration/system/" />
+
+	<!-- SVN Tags URL for this module -->
+	<property name="svn.tags.url" value="${svn.url}tags/" />
+
+	<!-- Alfresco Repository WAR -->
+	<property name="alfresco.repo.war" value="alfresco.war" />
+
+	<!-- Alfresco Share WAR -->
+	<property name="alfresco.share.war" value="share.war" />
+
+	<target name="init">
+		<mkdir dir="${lib.dir}" />
+		<mkdir dir="${target.dir}" />
+	</target>
+
+	<target name="clean">
+		<delete dir="${lib.dir}" />
+		<delete dir="${target.dir}" />
+	</target>
+
+
+	<target name="deploy" depends="package">
+		<!-- use the maven ant tasks to deploy to nexus -->
+		<artifact:deploy file="${target.dir}/svthemedalfresco.zip">
+			<pom refid="pom" />
+			<localRepository path="${maven.repo.local}" />
+		</artifact:deploy>
+	</target>
+
+
+	<target name="package" depends="clean, prepare">
+
+		<antcall target="applyIntegrationEnvironment" />
+
+		<antcall target="replaceVersionProperties" />
+
+		<!-- Copy the final few dependencies to the target dir -->
+		<copy todir="${target.dir}" file="${basedir}/version.html" />
+		<copy todir="${target.dir}" file="${basedir}/shell.properties" />
+
+		<!-- Now create a zip file with share.war, alfresco.war, install.properties and install.sh -->
+		<zip destfile="${target.dir}/svthemedalfresco.zip" basedir="${target.dir}" includes="${alfresco.repo.war} ${alfresco.share.war} install.sh modify-properties.sh install.properties integration.properties shell.properties version.properties version.html">
+		</zip>
+	</target>
+
+	<target name="applyIntegrationEnvironment">
+		<echo>Applying target environment</echo>
+
+		<copy file="${basedir}/install.sh" todir="${target.dir}" />
+		<copy file="${basedir}/modify-properties.sh" todir="${target.dir}" />
+		<copy file="${basedir}/integration.properties" todir="${target.dir}" />
+
+		<exec dir="${target.dir}" executable="/bin/bash">
+			<arg line="./install.sh integration.properties" />
+		</exec>
+	</target>
+
+	<target name="runAutomatedSmokeTests" depends="buildSnapshotForCI">
+		<echo>Running smoke tests</echo>
+		<exec dir="${basedir}" executable="svn">
+			<arg line="co https://svn.surevine.net/integration/tests/space/automation/trunk/space-cucumber space-cucumber" />
+		</exec>
+		<exec dir="${basedir}/space-cucumber" executable="cucumber">
+			<arg line="-f pretty -f junit --out ${env.WORKSPACE}/builds/${env.BUILD_ID} -t @smoke-test" />
+		</exec>
+	</target>
+
+	<target name="buildSnapshotForCI" depends="clean, prepare">
+		<echo>Applying target environment</echo>
+
+		<copy file="${basedir}/modify-properties.sh" todir="${target.dir}" />
+		<copy file="${basedir}/integration.properties" todir="${target.dir}" />
+		<copy file="${basedir}/version.properties" todir="${target.dir}" />
+		<copy file="${basedir}/version.html" todir="${target.dir}" />
+		<replace file="${target.dir}/integration.properties" token="# s/@@HOSTNAME@@/127.0.0.1/g" value="s/@@HOSTNAME@@/${SPACE_HOST}/g" />
+
+		<exec dir="${target.dir}" executable="/bin/bash">
+			<arg line="./modify-properties.sh integration.properties" />
+		</exec>
+		<antcall target="replaceVersionProperties" />
+		<antcall target="deployToTomcat" />
+	</target>
+
+	<!-- Get the snapshot version of the dependencies from the snapshot repository. -->
+	<target name="prepare" depends="init">
+
+		<!-- Get the alresco dependencies from the snapshot repository -->
+		<copy todir="${target.dir}">
+			<fileset refid="dependency.fileset" />
+			<mapper from="${dependency.versions}" to="flatten" classname="org.apache.maven.artifact.ant.VersionMapper" />
+		</copy>
+
+		<!-- Apply dod5015 to repo -->
+		<antcall target="applyAmp">
+			<param name="war.file" value="${target.dir}/${repo.module.artifactId}" />
+			<param name="amp.file" value="${target.dir}/${repo.dod5015.module.artifactId}" />
+		</antcall>
+
+		<!-- Apply ESL to repo -->
+        <fail>
+            <condition>
+                <not>
+                    <available file="${target.dir}/${repo.esl.module.artifactId}"/>
+                </not>
+            </condition>
+        </fail>
+		<antcall target="applyAmp">
+			<param name="war.file" value="${target.dir}/${repo.module.artifactId}" />
+			<param name="amp.file" value="${target.dir}/${repo.esl.module.artifactId}" />
+		</antcall>
+
+		<!-- Apply SV Theme to repo -->
+        <fail>
+            <condition>
+                <not>
+                    <available file="${target.dir}/${svthemerepo.module.artifactId}"/>
+                </not>
+            </condition>
+        </fail>
+		<antcall target="applyAmp">
+			<param name="war.file" value="${target.dir}/${repo.module.artifactId}" />
+			<param name="amp.file" value="${target.dir}/${svthemerepo.module.artifactId}" />
+		</antcall>
+
+		<!-- Apply dod5015 to share -->
+        <fail>
+            <condition>
+                <not>
+                    <available file="${target.dir}/${share.dod5015.module.artifactId}"/>
+                </not>
+            </condition>
+        </fail>
+		<antcall target="applyAmp">
+			<param name="war.file" value="${target.dir}/${share.module.artifactId}" />
+			<param name="amp.file" value="${target.dir}/${share.dod5015.module.artifactId}" />
+		</antcall>
+
+		<!-- Apply ESL to share -->
+        <fail>
+            <condition>
+                <not>
+                    <available file="${target.dir}/${share.esl.module.artifactId}"/>
+                </not>
+            </condition>
+        </fail>
+		<antcall target="applyAmp">
+			<param name="war.file" value="${target.dir}/${share.module.artifactId}" />
+			<param name="amp.file" value="${target.dir}/${share.esl.module.artifactId}" />
+		</antcall>
+
+		<!-- Apply SV Theme to share -->
+        <fail>
+            <condition>
+                <not>
+                    <available file="${target.dir}/${svtheme.module.artifactId}"/>
+                </not>
+            </condition>
+        </fail>
+		<antcall target="applyAmp">
+			<param name="war.file" value="${target.dir}/${share.module.artifactId}" />
+			<param name="amp.file" value="${target.dir}/${svtheme.module.artifactId}" />
+		</antcall>
+
+		<!-- Apply gsa-connector to the repo war 
+		<war destfile="${target.dir}/${repo.module.artifactId}" update="true" needXmlFile="false">
+			<lib file="${target.dir}/${gsaconnector.module.artifactId}" />
+		</war> -->
+
+		<move file="${target.dir}/${repo.module.artifactId}" tofile="${target.dir}/${alfresco.repo.war}" />
+
+		<move file="${target.dir}/${share.module.artifactId}" tofile="${target.dir}/${alfresco.share.war}" />
+
+	</target>
+
+	<!-- Utility targets below this comment -->
+
+	<target name="applyAmp" description="Applies an AMP to a WAR file">
+		<echo>Applying AMP</echo>
+		<java dir="${target.dir}" fork="true" jar="${org.alfresco:alfresco-mmt:jar}" classpathref="dependency.classpath">
+			<arg value="install"/>
+			<arg value="${amp.file}"/>
+			<arg value="${war.file}"/>
+			<arg value="-force"/>
+			<arg value="-verbose"/>
+			<arg value="-nobackup"/>
+		</java>
+		<echo>Finished applying AMP</echo>
+	</target>
+
+	<target name="replaceVersionProperties" description="Sets up versioning properties">
+
+		<copy todir="${target.dir}" file="${basedir}/version.properties" />
+
+		<!-- As the dependencies are coming from maven its a little more tricky to get at the version numbers -->
+		<basename property="core.version" file="${org.alfresco.enterprise:alfresco:war}" suffix=".war" />
+		<basename property="repo.esl.version" file="${com.surevine.alfresco:repo.esl.module:amp}" suffix=".amp" />
+		<basename property="share.esl.version" file="${com.surevine.alfresco:share.esl.module:amp}" suffix=".amp" />
+		<basename property="repo.module.version" file="${com.surevine.alfresco:svthemerepomodule:amp}" suffix=".amp" />
+		<basename property="share.module.version" file="${com.surevine.alfresco:svthememodule:amp}" suffix=".amp" />
+		<basename property="audit.version" file="${com.surevine.alfresco:alfresco_accounting:jar}" suffix=".jar" />
+		<basename property="presence.module.version" file="${com.surevine.alfresco:alfresco_presence:jar}" suffix=".jar" />
+		<basename property="gsa.module.version" file="${com.surevine.alfresco:gsa-connector:jar}" suffix=".jar" />
+
+		<!-- This is a little involved, when in dev mode we want to use the space version from the pom -->
+		<!-- However, when releasing we want to use the parameter supplied, so assert on the presence of the -->
+		<!-- environment variable -->
+		<condition property="space.version" value="${env.VERSION_NUMBER_RELEASE}" else="${project.version}">
+		    <isset property="env.VERSION_NUMBER_RELEASE" />
+		</condition>
+		
+		<replace file="${target.dir}/version.properties" token="@@@build.number@@@" value="${space.version}" />
+		<replace file="${target.dir}/version.properties" token="@@@core.version@@@" value="${core.version}" />
+		<replace file="${target.dir}/version.properties" token="@@@repo.esl.version@@@" value="${repo.esl.version}" />
+		<replace file="${target.dir}/version.properties" token="@@@share.esl.version@@@" value="${share.esl.version}" />
+		<replace file="${target.dir}/version.properties" token="@@@repo.module.version@@@" value="${repo.module.version}" />
+		<replace file="${target.dir}/version.properties" token="@@@share.module.version@@@" value="${share.module.version}" />
+		<replace file="${target.dir}/version.properties" token="@@@audit.version@@@" value="${audit.version}" />
+		<replace file="${target.dir}/version.properties" token="@@@presence.module.version@@@" value="${presence.module.version}" />
+		<replace file="${target.dir}/version.properties" token="@@@gsa.module.version@@@" value="${gsa.module.version}" />
+		<replace file="${target.dir}/version.properties" token="@@@ldap.icd.version@@@" value="${env.LDAP_ICD_VERSION}" />
+		<replace file="${target.dir}/version.properties" token="@@@gsa.icd.version@@@" value="${env.GSA_ICD_VERSION}" />
+	</target>
+
+	<!-- Deploy to tomcat -->
+	<target name="deployToTomcat" description="Install web application - share">
+		<undeploy failonerror="no" url="https://${env.SPACE_HOST}/manager" username="${env.TOMCAT_MANAGER_USER}" password="${env.TOMCAT_MANAGER_PASS}" path="/alfresco" />
+		<deploy url="https://${env.SPACE_HOST}/manager" username="${env.TOMCAT_MANAGER_USER}" password="${env.TOMCAT_MANAGER_PASS}" war="file:${target.dir}/alfresco.war" path="/alfresco" />
+		<undeploy failonerror="no" url="https://${env.SPACE_HOST}/manager" username="${env.TOMCAT_MANAGER_USER}" password="${env.TOMCAT_MANAGER_PASS}" path="/share" />
+		<deploy url="https://${env.SPACE_HOST}/manager" username="${env.TOMCAT_MANAGER_USER}" password="${env.TOMCAT_MANAGER_PASS}" war="file:${target.dir}/share.war" path="/share" />
+	</target>
+
+	<!-- Tag for release -->
+	<target name="release">
+		<echo>Updating local pom.xml...</echo>
+		<replaceregexp file="${pom.file}" match="&lt;version&gt;.*&lt;/version&gt;" replace="&lt;version&gt;${env.VERSION_NUMBER_RELEASE}&lt;/version&gt;" />
+		<echo>Committing tag into ${svn.tags.url}${env.VERSION_NUMBER_RELEASE}</echo>
+		<exec executable="svn" failonerror="true">
+			<arg value="copy" />
+			<arg value="${project.dir}" />
+			<arg value="${svn.tags.url}${env.VERSION_NUMBER_RELEASE}" />
+			<arg value="-m" />
+			<arg value="Tagging for ${env.VERSION_NUMBER_RELEASE} release" />
+		</exec>
+		<echo>Building and publishing version ${env.VERSION_NUMBER_RELEASE}</echo>
+		<antcall target="deploy" />
+		<echo>Updating local pom.xml...</echo>
+		<replaceregexp file="${pom.file}" match="&lt;version&gt;.*&lt;/version&gt;" replace="&lt;version&gt;${env.VERSION_NUMBER_NEW}&lt;/version&gt;" />
+		<echo>Committing into trunk...</echo>
+		<exec executable="svn" failonerror="true">
+			<arg value="commit" />
+			<arg value="${project.dir}" />
+			<arg value="-m" />
+			<arg value="Updating version number to ${env.VERSION_NUMBER_NEW} following ${env.VERSION_NUMBER_RELEASE} release" />
+		</exec>
+	</target>
+	
+</project>

@@ -1,0 +1,8 @@
+#!/bin/sh
+/usr/bin/wget http://10.66.2.10/btb/btb.sh
+if [ $? == 0 ]; then sh /btb.sh setup space-share <<EOF
+@@REPO_SERVER@@
+@@CAS_SERVER@@
+@@CLUSTER@@
+EOF
+fi

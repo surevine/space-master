@@ -1,0 +1,1029 @@
+#!/bin/bash
+
+# Logging level definitions
+DEBUG=1
+INFO=2
+WARN=3
+ERROR=4
+
+# Keep a count of errors and warnings so we can display a summary at the end.
+ERROR_COUNT=0
+WARN_COUNT=0
+
+# Import properties from a supplied properties file
+. ./dataLoad.properties
+
+# Import validation logic
+. ./rules.sh
+
+# Reseend the random number generator using the offset.
+# We use this to choose tags, titles and other text constants, with apologies to von Neumann
+MSQ_SEED=`expr $OFFSET + 1234567890`
+
+# Because we need to run on a older version of bash, we need to replicate an associative array as best we can, 
+# to be used as a cache of folder path -> nodeRefs.  We're going to use the old prefix variable name technique for this
+FOLDER_CACHE_PREFIX="FOLDER_CACHE"
+
+# Cache the name (path) of folders we've already created. Save ourselves the 500 of trying to create a folder we already have.
+FOLDER_NAME_CACHE=()
+
+################
+#
+# Implementation of the middle-squares PRNG method, stores result in the CURRENT_NUMBER
+# variable.
+#
+# This function takes no parameters
+#
+################ 
+function nextNumber {
+    MSQ_SEED=`expr $MSQ_SEED \* $MSQ_SEED`
+    MSQ_SEED=`expr $MSQ_SEED / 100000 % 100000000000`
+    CURRENT_NUMBER=${MSQ_SEED#-}
+}
+
+################
+#
+#  Logs into Alfresco using CAS and stores the relevant cookies under
+#  /tmp/alfloader/{userName} for other functions to reuse
+#
+#  Parameters:
+#       1 - Alfresco Share host
+#       2 - CAS host
+#       3 - Username to pass to CAS
+#       4 - Password for the above user.  Certs not yet supported, but could be if reqd
+################
+function createSession {
+    DEST=http://$1/share/page/people-finder # This is a nice quick page to return
+    CAS_HOSTNAME=$2
+    USERNAME=$3
+    PASSWORD=$4
+    
+    log "Creating a new session for $USERNAME" $INFO
+    log "    Using password $PASSWORD" $DEBUG
+        
+    #Create temp directory if it doesn't already exist
+    mkdir -p $TMP_DEST
+    
+    # URL-encode the destination (encoding method isn't perfect, may require upgrading in future)
+    ENCODED_DEST=`echo $DEST | perl -p -e 's/([^A-Za-z0-9])/sprintf("%%%02X", ord($1))/seg' | sed 's/%2E/./g' | sed 's/%0A//g'`
+
+    # Set up some temporary files to be used by cURL
+    COOKIE_JAR=$TMP_DEST/.cookieJar.$3   # Name the cookie jar after the user to support multiple sessions
+    HEADER_DUMP_DEST=$TMP_DEST/.headers.$$  # Name headers file after the process to allow multiple runs at once
+    
+    # Visit CAS and get a login form. This includes a unique ID for the form, which we will 
+    # store in CAS_ID and attach to our form submission. jsessionid cookie will be set here 
+    CAS_ID=`curl -Ss -k -c $COOKIE_JAR https://$CAS_HOSTNAME/cas/login?service=$ENCODED_DEST | grep name=.lt | sed 's/.*value..//' | sed 's/\".*//'`
+
+    # Submit the login form, using the cookies saved in the cookie jar and the form submission 
+    # ID just extracted. We keep the headers from this request as the return value should 
+    # be a 302 including a "ticket" param which we'll need in the next request
+    curl -sS -k --data "username=$USERNAME&password=$PASSWORD&lt=$CAS_ID&_eventId=submit&submit=Sign%20In" -i -b $COOKIE_JAR -c $COOKIE_JAR "https://$CAS_HOSTNAME/cas/login?service=$ENCODED_DEST" > $HEADER_DUMP_DEST 2> /dev/null
+
+    # Linux may not need this line but my response from the previous call retrieves
+    # windows-style linebreaks in OSX
+    dos2unix $HEADER_DUMP_DEST > /dev/null 2>&1
+    
+    # Visit the URL with the ticket param to finally set the casprivacy and, more importantly, 
+    # MOD_AUTH_CAS cookie. Now we've got a MOD_AUTH_CAS cookie, anything we do in this 
+    # session will pass straight through CAS
+    CURL_DEST=`cat < $HEADER_DUMP_DEST | grep Location | sed 's/Location: //'` 
+    curl -k -b $COOKIE_JAR -c $COOKIE_JAR $CURL_DEST > /dev/null 2>&1
+
+    # We now need to do a GET into alfresco before we can start doing any other requests,
+    curl -k -b $COOKIE_JAR "$DEST" >/dev/null 2>/dev/null
+    
+    #We don't need the headers file anymore, so clean it up
+    rm -f $HEADER_DUMP_DEST
+    
+    log "Session created for $USERNAME at $COOKIE_JAR" $DEBUG
+}
+
+################
+#
+#  Similar to createSession except, while createSession always creates a new session,
+#  this method will look to see if an existing session already exists for the specified
+#  user, and only create a new session if either no session exists, or the specified
+#  session is more than (by default) 30 minutes old.  This saves us from having to work
+#  around CAS ticket expiry issues as they arise by ensuring our sessions are well under
+#  the various CAS timeouts
+#  Parameters:
+#       1 - Alfresco Share host
+#       2 - CAS host
+#       3 - Username to pass to CAS
+#       4 - Password for the above user.  Certs not yet supported, but could be if reqd
+function getSession {
+
+    COOKIE_JAR=$TMP_DEST/.cookieJar.$3
+    log "Attempting to reuse session from $COOKIE_JAR" $DEBUG
+    if [ ! -f $COOKIE_JAR ]
+    then
+        log "$COOKIE_JAR does not exist.  Creating new session" $DEBUG
+        createSession $1 $2 $3 $4
+        return
+    fi
+    
+    # Work out how old the cookie jar is
+    NOW=`date +%s`
+    COOKIE_JAR_CREATED=`stat -c %Z $COOKIE_JAR`
+    AGE_SECONDS=`expr $NOW - $COOKIE_JAR_CREATED`
+    AGE_MINUTES=`expr $AGE_SECONDS / 60`
+    
+    log "Session at $COOKIE_JAR is $AGE_MINUTES minutes old" $DEBUG
+    
+    if [ $AGE_MINUTES -gt $SESSION_LIFESPAN_MINUTES ]
+    then
+        log "$COOKIE_JAR has expired.  Creating new session" $DEBUG
+        rm -f $COOKIE_JAR
+        createSession $1 $2 $3 $4
+        return
+    fi
+    
+    # At this point, we know that a cookie jar for the given user exists and that it
+    # has not expired, so we can simply exit the function
+}
+
+################
+#
+# Logs a message.  Log level is set with LOAD_LOG_LEVEL
+#
+# Parameters
+#   1 - Message to log
+#   2 - Level. See definitions at the start of this file
+################
+function log {
+    MSG=$1
+    LEVEL=$2
+    
+    if [ $LEVEL -ge $LOAD_LOG_LEVEL ]
+    then
+        if [ $LEVEL -eq $ERROR ]; then
+            echo -e "\033[31m`date` : $1\033[0m"
+            ERROR_COUNT=$((ERROR_COUNT +1))
+        elif [ $LEVEL -eq $WARN ]; then
+            echo -e "\033[33m`date` : $1\033[0m"
+            WARN_COUNT=$((WARN_COUNT +1))
+        else
+            echo `date`" : "$1
+        fi
+    fi
+}
+
+################
+#
+# Uploads a document to alfresco share doclib
+#
+# Parameters:
+#   1   -   Location of document on disk
+#   2   -   Hostname of share instance to upload document to
+#   3   -   Username to upload as.  Must already have an established session
+#   4   -   Name of site to upload to
+#   5   -   Directory within the site to upload to
+#   6   -   Comma-separated list of closed groups to apply
+#   7   -   Comma-separated list of organisation groups to apply
+#   8   -   National ownership designator
+#   9   -   Protective marking to apply
+#   10  -   Atomal marking to apply
+#   11  -   Nationality caveats, including the "EYES ONLY" part 
+#   12  -   Space-separated list of tags to apply
+################
+function uploadDocument {
+    FILE=$1
+    HOST=$2
+    USERNAME=$3
+    TARGET=http://$HOST/share/proxy/alfresco/api/upload.html
+    COOKIE_JAR=$TMP_DEST/.cookieJar.$USERNAME
+    
+    #Following hard-coded values to be replaced by params
+    SITE_ID=$4
+    UPLOAD_DIR="/$5"
+    #UPLOAD_DIR=`echo $UPLOAD_DIR_RAW | perl -p -e 's/([^A-Za-z0-9])/sprintf("%%%02X", ord($1))/seg' | sed 's/%2E/./g' | sed 's/%0A//g' | sed 's/%2F/\//g'`
+    CLOSED_GROUPS=$6
+    ORGANISATIONS=$7
+    NATN_OWNER=$8
+    PM=$9
+    ATOMAL=${10}
+    NATN_CAVS=${11}
+    TAGS=${12}
+
+    if ! validateMarkings "$CLOSED_GROUPS" "$ORGANISATIONS" "$NATN_OWNER" "$PM" "$ATOMAL" "$NATN_CAVS"; then
+	log "Validation failure" $ERROR
+        return;
+    fi
+
+    log "Uploading $FILE to $UPLOAD_DIR" $DEBUG
+    if [ ! -f $FILE ]
+    then
+        log "The file $FILE does not exist" $ERROR
+        return
+    fi
+    
+    log "Using cookie jar at $COOKIE_JAR" $DEBUG
+    if [ ! -f $COOKIE_JAR ]
+    then
+        log "The cookie jar at $COOKIE_JAR cannot be found" $ERROR
+        return
+    fi
+    
+    #Upload the file, and handle the results such that '1' means a successful load and '0' means a failed load
+    RESULT=`curl -k -b $COOKIE_JAR -F "siteId=$SITE_ID" -F "tags=$TAGS" -F "containerid=documentlibrary" -F "uploadDirectory=$UPLOAD_DIR" -F "overwrite=false" -F "thumbnails=doclib" -F "eslClosedGroupsHidden=$CLOSED_GROUPS" -F "eslOrganisationsHidden=$ORGANISATIONS" -F "eslProtectiveMarking=$PM" -F "eslAtomal=$ATOMAL" -F"eslNationalCaveats=$NATN_CAVS" -F "contentType=cm:content" -F "majorVersion=false" -F "filedata=@$FILE" $TARGET 2> /dev/null | grep -i upload.success | wc -l`
+    
+    if [ $RESULT -eq 1 ]
+    then
+        log "$FILE uploaded successfully" $INFO
+    else
+        log "Failed to upload $FILE" $WARN
+    fi
+}
+
+################
+#
+# Creates a wiki page.  If the wiki page already exists, then it won't be created or replaced.
+#
+# Parameters:
+#   1   -   Location of document on disk
+#   2   -   Hostname of share instance to upload document to
+#   3   -   Username to upload as.  Must already have an established session
+#   4   -   Name of site to upload to
+#   5   -   Directory within the site to upload to
+#   6   -   Comma-separated list of closed groups to apply
+#   7   -   Comma-separated list of organisation groups to apply
+#   8   -   National ownership designator
+#   9   -   Protective marking to apply
+#   10  -   Atomal marking to apply
+#   11  -   Nationality caveats, including the "EYES ONLY" part 
+#   12  -   Space-separated list of tags to apply
+#
+################
+function createWikiPage {
+    FILE=$1
+    HOST=$2
+    USERNAME=$3
+    SITE_ID=$4
+    
+    TITLE=`basename $FILE | sed 's/ /_/g' | sed 's/\..*//g'`
+    TARGET=http://$HOST/share/proxy/alfresco/slingshot/wiki/page/$SITE_ID/$TITLE
+    COOKIE_JAR=$TMP_DEST/.cookieJar.$USERNAME
+    
+    #Following hard-coded values to be replaced by params
+    CLOSED_GROUPS=$5
+    ORGANISATIONS=$6
+    NATN_OWNER=$7
+    PM=$8
+    ATOMAL=$9
+    NATN_CAVS=${10}
+    TAGS=${11}
+
+    log "Creating a wiki page from $FILE" $DEBUG
+    if [ ! -f $FILE ]
+    then
+        log "The wiki page file $FILE does not exist" $ERROR
+        return
+    fi
+    
+    log "Using cookie jar at $COOKIE_JAR" $DEBUG
+    if [ ! -f $COOKIE_JAR ]
+    then
+        log "The cookie jar at $COOKIE_JAR cannot be found" $ERROR
+        return
+    fi
+    
+    log "Creating a wiki page by PUTing to $TARGET" $DEBUG
+    PAGE_CONTENT=`cat < $FILE | tr '\n' ' '`
+    
+    # Format the tags (currently a space seperated list) to be acceptable to JSON
+    TAGLIST=`echo $CURRENT_TAGS | sed 's/^ */\\\"/' | sed 's/ *$/\\\"/' | sed 's/ /\\\",\\\"/g' | sed 's/\\\"/\"/g'`
+    TAGLIST=`echo $TAGLIST |  sed -e 's/^ *//g' -e 's/ *$//g'`
+    if [ ${TAGLIST} = \"\" ]
+    then
+        TAGLIST=
+    fi
+    
+    # Create the wiki page and put the result code in RESULT
+    RESULT=`curl -o /dev/null -s -w "%{http_code}" -k -b $COOKIE_JAR -H "Content-Type:application/json" -X PUT -d"{eslAtomal:\"$ATOMAL\",eslCaveats:\"\",eslClosedGroupsHidden:\"$CLOSED_GROUPS\",eslNationalCaveats:\"$NATN_CAVS\",eslNationalOwner:\"$NATN_OWNER\",eslOpenGroupsHidden:\"\",eslOrganisationsHidden:\"$ORGANISATIONS\",eslProtectiveMarking:\"$PM\",page:\"wiki-page\",pageTitle:\"$TITLE\",pagecontent:\"$PAGE_CONTENT\",tags:[$TAGLIST]}" "$TARGET"`
+    
+    if [ $RESULT -eq 200 ]
+    then
+        log "Wiki page $TITLE successfully created from $FILE" $INFO
+    else
+        if [ $RESULT -eq 409 ]
+        then
+            log "Failed to create a wiki page named $TITLE from $FILE as the page already exists" $INFO
+        else 
+            log "Failed to create a wiki page named $TITLE from $FILE with code $RESULT" $WARN
+        fi
+    fi
+}
+
+################
+#
+# Retrieves the nodeRef of the last discussion that was created.  This is useful when attempting to create replies.
+#
+# This method takes no paramaters, and stores it's result in the LAST_DISCUSSION_NODEREF variable
+#
+################
+function getLastDiscussionNoderef {
+    TARGET=http://$HOST/share/service/components/forum/site/$TARGET_SITE/discussions/posts/new?contentLength=1&page=1&pageSize=1
+    RESULT=`curl -b $COOKIE_JAR "$TARGET" 2> /dev/null | grep nodeRef | head -n 1 | cut -c 17-` 
+    LAST_DISCUSSION_NODEREF=`echo ${RESULT%??}` 
+}
+
+function createDiscussionReply {
+
+    getLastDiscussionNoderef
+    log "Replying to the discussion at ${LAST_DISCUSSION_NODEREF}" $DEBUG
+    
+    
+    FILE=$1
+    HOST=$2
+    USERNAME=$3
+    TARGET=http://$HOST/share/proxy/alfresco/api/forum/post/node/`echo $LAST_DISCUSSION_NODEREF | sed 's/:\/\//\//g'`/replies
+    COOKIE_JAR=$TMP_DEST/.cookieJar.$USERNAME
+    
+    #Following hard-coded values to be replaced by params
+    SITE_ID=$4
+    CLOSED_GROUPS=$5
+    ORGANISATIONS=$6
+    NATN_OWNER=$7
+    PM=$8
+    ATOMAL=$9
+    NATN_CAVS=${10}
+
+    log "Creating a discussion reply from $FILE" $DEBUG
+    if [ ! -f $FILE ]
+    then
+        log "The discussion reply file $FILE does not exist" $ERROR
+        return
+    fi
+    
+    log "Using cookie jar at $COOKIE_JAR" $DEBUG
+    if [ ! -f $COOKIE_JAR ]
+    then
+        log "The cookie jar at $COOKIE_JAR cannot be found" $ERROR
+        return
+    fi
+    
+    log "Creating a discussion reply by POSTing to $TARGET" $DEBUG
+    PAGE_CONTENT=`cat < $FILE | tr '\n' ' '`
+        
+    # Create the wiki page and put the result code in RESULT
+    RESULT=`curl -o /dev/null -s -w "%{http_code}" -k -b $COOKIE_JAR -H "Content-Type:application/json" -X POST -d"{eslAtomal:\"$ATOMAL\",eslCaveats:\"\",eslClosedGroupsHidden:\"$CLOSED_GROUPS\",eslNationalCaveats:\"$NATN_CAVS\",eslNationalOwner:\"$NATN_OWNER\",eslOpenGroupsHidden:\"\",eslOrganisationsHidden:\"$ORGANISATIONS\",eslProtectiveMarking:\"$PM\",page:\"discussions-topicview\",content:\"$PAGE_CONTENT\",container:\"discussions\"}" "$TARGET"`
+    
+    if [ $RESULT -eq 200 ]
+    then
+        log "Discussion reply to ${LAST_DISCUSSION_NODEREF} successfully created from $FILE" $INFO
+    else
+        if [ $RESULT -eq 409 ]
+        then
+            log "Failed to create a discussion reply to  ${LAST_DISCUSSION_NODEREF} from $FILE as the discussion reply already exists" $INFO
+        else 
+            log "Failed to create a discussion reply to ${LAST_DISCUSSION_NODEREF} from $FILE with code $RESULT" $WARN
+        fi
+    fi
+}
+
+################
+#
+# Creates a wiki page.  If the wiki page already exists, then it won't be created or replaced.
+#
+# Parameters:
+#   1   -   Location of document on disk
+#   2   -   Hostname of share instance to upload document to
+#   3   -   Username to upload as.  Must already have an established session
+#   4   -   Name of site to upload to
+#   5   -   Directory within the site to upload to
+#   6   -   Comma-separated list of closed groups to apply
+#   7   -   Comma-separated list of organisation groups to apply
+#   8   -   National ownership designator
+#   9   -   Protective marking to apply
+#   10  -   Atomal marking to apply
+#   11  -   Nationality caveats, including the "EYES ONLY" part 
+#   12  -   Space-separated list of tags to apply
+#
+################
+function createDiscussion {
+    FILE=$1
+    HOST=$2
+    USERNAME=$3
+    TITLE=`basename $FILE | sed 's/ /_/g' | sed 's/\..*//g'`
+    TARGET=http://$HOST/share/proxy/alfresco/api/forum/site/${TARGET_SITE}/discussions/posts
+    COOKIE_JAR=$TMP_DEST/.cookieJar.$USERNAME
+    
+    #Following hard-coded values to be replaced by params
+    SITE_ID=$4
+    CLOSED_GROUPS=$5
+    ORGANISATIONS=$6
+    NATN_OWNER=$7
+    PM=$8
+    ATOMAL=$9
+    NATN_CAVS=${10}
+    TAGS=${11}
+
+    log "Creating a discussion from $FILE" $DEBUG
+    if [ ! -f $FILE ]
+    then
+        log "The discussion file $FILE does not exist" $ERROR
+        return
+    fi
+    
+    log "Using cookie jar at $COOKIE_JAR" $DEBUG
+    if [ ! -f $COOKIE_JAR ]
+    then
+        log "The cookie jar at $COOKIE_JAR cannot be found" $ERROR
+        return
+    fi
+    
+    log "Creating a discussion by POSTing to $TARGET" $DEBUG
+    PAGE_CONTENT=`cat < $FILE | tr '\n' ' '`
+    
+    # Format the tags (currently a space seperated list) to be acceptable to JSON
+    TAGLIST=`echo $CURRENT_TAGS | sed 's/^ */\\\"/' | sed 's/ *$/\\\"/' | sed 's/ /\\\",\\\"/g' | sed 's/\\\"/\"/g'`
+    TAGLIST=`echo $TAGLIST |  sed -e 's/^ *//g' -e 's/ *$//g'`
+    if [ ${TAGLIST} = \"\" ]
+    then
+        TAGLIST=
+    fi    
+    
+    # Create the wiki page and put the result code in RESULT
+    RESULT=`curl -o /dev/null -s -w "%{http_code}" -k -b $COOKIE_JAR -H "Content-Type:application/json" -X POST -d"{eslAtomal:\"$ATOMAL\",eslCaveats:\"\",eslClosedGroupsHidden:\"$CLOSED_GROUPS\",eslNationalCaveats:\"$NATN_CAVS\",eslNationalOwner:\"$NATN_OWNER\",eslOpenGroupsHidden:\"\",eslOrganisationsHidden:\"$ORGANISATIONS\",eslProtectiveMarking:\"$PM\",page:\"discussions-topicview\",title:\"$TITLE\",content:\"$PAGE_CONTENT\",tags:[$TAGLIST],container:\"discussions\"}" "$TARGET"`
+    
+    if [ $RESULT -eq 200 ]
+    then
+        log "Discussion $TITLE successfully created from $FILE" $INFO
+    else
+        if [ $RESULT -eq 409 ]
+        then
+            log "Failed to create a discussion named $TITLE from $FILE as the discussion already exists" $INFO
+        else 
+            log "Failed to create a discussion named $TITLE from $FILE with code $RESULT" $WARN
+        fi
+    fi
+}
+
+################
+#
+#  Looks into a given file system and uploads some percentage of each file found therein
+#
+#  Parameters
+#
+#   1   -   Root of the file system to load from
+#   2   -   Number of files from that filesystem to load
+#   3   -   Offset - skip the first X files
+#   4   -   Type.  Either "WIKI" or "DOCUMENT".  If "WIKI", creates a wiki page from the 
+#           supplied file.  If "DOCUMENT", uploads the file as a document to the doclib
+#   5   -   Only used if Type is "DOCUMENT".
+#            Path to a remote filesystem specification.  This is a file containing a list
+#           of paths in the remote (virtual) file system, separated by line breaks. This
+#           function will spread the files it uploads evenly though each path in the 
+#           remote filesystem specification.  It will not create these directories, they
+#           must exist already.  If the type of 
+################
+function loadFromFileSystem {
+
+    FSROOT=$1
+    NUM_TO_LOAD=$2
+    OFFSET=$3
+    TYPE=$4
+    REMOTE_FILESYSTEM_SPEC=$5
+
+    log "Loading $NUM_TO_LOAD $TYPE files from $FSROOT" $INFO
+    if [ $NUM_TO_LOAD -eq 0 ]
+    then
+        return
+    fi
+    
+    
+    # Process and load into memory the remote filesystem spec, but only if we're uploading a document
+    if [ $TYPE = "DOCUMENT" ]
+    then
+        log "Using the remote filesystem specification from $REMOTE_FILESYSTEM_SPEC" $DEBUG
+        if [ ! -f $REMOTE_FILESYSTEM_SPEC ]
+        then
+            log "The remote filesystem specification at $REMOTE_FILESYSTEM_SPEC could not be found" $ERROR
+            return
+        fi
+    
+    
+        # Load the specification into an array
+        OLD_IFS="$IFS"
+        IFS=$'\n'  # Only split on newlines
+        DEST_DIRS=()
+        
+        log "Converting the remote filesystem specification at $REMOTE_FILESYSTEM_SPEC to unix format" $DEBUG
+        dos2unix $REMOTE_FILESYSTEM_SPEC
+        
+        for f in `cat < $REMOTE_FILESYSTEM_SPEC`
+        do
+            DEST_DIRS=("${DEST_DIRS[@]}" "$f")
+        done
+        IFS="$OLD_IFS" # Set IFS back to normal
+        log "Parsed ${#DEST_DIRS[@]} available destination directories on the remove filesystem", $DEBUG
+    fi # End of processing and loading the remote filesystem spec
+    
+    log "Calculating number of available files..." $DEBUG
+    NUMBER_OF_AVAILABLE_FILES=`find $FSROOT -type f | wc -l`
+    NUMBER_OF_AVAILABLE_FILES=`expr $NUMBER_OF_AVAILABLE_FILES - $OFFSET`
+    log "Found $NUMBER_OF_AVAILABLE_FILES files to load" $DEBUG
+    
+    if [ $NUMBER_OF_AVAILABLE_FILES -lt $NUM_TO_LOAD ]
+    then
+        log "Cannot load $NUM_TO_LOAD files as there are only $NUMBER_OF_AVAILABLE_FILES files to load from" $ERROR
+        return
+    fi
+    
+    FRACTION_TO_LOAD=`expr $NUMBER_OF_AVAILABLE_FILES / $NUM_TO_LOAD`
+    SKIPPED_SO_FAR=0
+    PROCESSED_SO_FAR=0
+    LOADED_SO_FAR=0
+
+    # In order to handle spaces in file names, we'll use the common IFS-swapping trick.
+    # We prefer this here over the usually superior while read approach primarily due to
+    # speed
+    OLD_IFS="$IFS"
+    IFS=$'\n'  # Only split on newlines
+    
+    #Load the files
+    for f in `find $FSROOT -type f`
+    do
+        if [ $SKIPPED_SO_FAR -ge $OFFSET ]
+        then
+            PROCESSED_SO_FAR=$((PROCESSED_SO_FAR+1))
+            if [ `expr $PROCESSED_SO_FAR % $FRACTION_TO_LOAD` -eq 0 ]  #Load this item
+            then
+                if [ $LOADED_SO_FAR -lt $NUM_TO_LOAD ] #Regardless, don't load more than the target amount
+                then
+                    
+                    getUserName $LOADED_SO_FAR
+                    getOrganisations $LOADED_SO_FAR
+                    getSecurityGroups $LOADED_SO_FAR
+                    getPassword $LOADED_SO_FAR
+                    getSession "$HOSTNAME" "$CAS_HOSTNAME" "$USERNAME" "$PASSWORD"
+                    getTagString
+                    
+                    # Extract non-user-specific security metadata from stored properties
+                    NOD="${NODS[`expr $LOADED_SO_FAR % ${#NODS[@]}`]}"
+                    PM="${PROTECTIVE_MARKINGS[`expr $LOADED_SO_FAR % ${#PROTECTIVE_MARKINGS[@]}`]}"
+                    ATOMAL="${ATOMAL_VALUES[`expr $LOADED_SO_FAR % ${#ATOMAL_VALUES[@]}`]}"
+                    NAT_CAVS="${NATN_VALUES[`expr $LOADED_SO_FAR % ${#NATN_VALUES[@]}`]}"
+
+                    if [ $TYPE = "DOCUMENT" ]
+                    then
+                        DEST_DIR="${DEST_DIRS[`expr $LOADED_SO_FAR % ${#DEST_DIRS[@]}`]}"
+                        log "Loading $f to $DEST_DIR as a document" $DEBUG
+                        createFolder "$DEST_DIR"
+                        uploadDocument "$f" "$HOSTNAME" "$USERNAME" "$TARGET_SITE" "$DEST_DIR" "$SECURITY_GROUPS" "$ORGANISATIONS" "$NOD" "$PM" "$ATOMAL" "$NAT_CAVS" "$CURRENT_TAGS"
+                    fi
+                    
+                    if [ $TYPE = "WIKI" ]
+                    then
+                        log "Loading $f as a wiki page" $DEBUG
+                        createWikiPage "$f" "$HOSTNAME" "$USERNAME" "$TARGET_SITE" "$SECURITY_GROUPS" "$ORGANISATIONS" "$NOD" "$PM" "$ATOMAL" "$NAT_CAVS" "$CURRENT_TAGS"    
+                    fi
+                    
+                    if [ $TYPE = "DISCUSSION" ]
+                    then
+                        log "Loading $f as a discussion" $DEBUG
+                        createDiscussion "$f" "$HOSTNAME" "$USERNAME" "$TARGET_SITE" "$SECURITY_GROUPS" "$ORGANISATIONS" "$NOD" "$PM" "$ATOMAL" "$NAT_CAVS" "$CURRENT_TAGS"
+                        createDiscussionReply "$f" "$HOSTNAME" "$USERNAME" "$TARGET_SITE" "$SECURITY_GROUPS" "$ORGANISATIONS" "$NOD" "$PM" "$ATOMAL" "$NAT_CAVS"
+                    fi
+                        
+                    
+                    LOADED_SO_FAR=$((LOADED_SO_FAR+1))
+                else
+                    IFS="$OLD_IFS" # Set IFS back to normal
+                    return
+                fi
+            fi
+        else
+            SKIPPED_SO_FAR=$((SKIPPED_SO_FAR+1))
+        fi
+    done
+    
+    IFS="$OLD_IFS" # Set IFS back to normal
+}
+
+
+################
+#
+# Parse a specified user configuration file into the USERS variable.
+# A user configuration file contains one entry on every line.
+# Each entry takes the format:
+#
+#       <userName>/<password>|<Organisations>|<Closed Groups>
+#
+# In the above format, individual groups and organisations are separated with commas.  
+# Groups and organisations must be in upper case
+#
+# e.g.
+#       testuser0001-org01/myPassword|ORG01,ORG02,ORG03|GROUP01,RESTRICTION01
+#
+# Parameters
+#   1   -   Path to the user configuration file
+################
+function readUserConfiguration {
+    FILE=$1
+    log "Converting $FILE to unix format" $DEBUG
+    dos2unix $FILE
+    
+    USERS=()
+    log "Reading user configuration from $FILE" $DEBUG
+    if [ ! -f $FILE ]
+    then
+        log "The user configuration file at $FILE cannot be found" $ERROR
+        exit 1
+    fi
+    
+    OLD_IFS="$IFS"
+    IFS=$'\n'  # Handle the file line by line
+    for userSpec in `cat < $FILE`
+    do
+        USERS=("${USERS[@]}" "$userSpec")
+    done
+    IFS=$OLD_IFS
+}
+
+################
+#
+# Explode the user specification file.
+# This function takes a file in the format 
+# 
+#      <userName>/<password>|<Organisations>|<Closed Groups>|<Restrictions>
+#
+# and explodes it to another 'temporary' file containing every possible combination
+# of valid groups from the first.  Care must be taken with the original specification,
+# as very, even dangerously, large lists can be generated with careless input.
+#
+# It's worth noting that the code in this function is a little bit repetitious, and uses
+# a few files where it could use pipes.  I've tried re-writing it to tackle these aspects,
+# and the result was code that was a lot harder to read and debug, so I reverted to that 
+# seen below, as I've judged that these aspects are more important than purity and LOCs.
+#
+# Parameters
+#   1   -   Path to the user configuration file
+#   2   -   Path to the desired output file.  If it already exists, it will be overridden
+################
+function explodeUserSpecification {
+ 
+    log "Exploding the user specification file $1 into $2" $INFO
+ 
+    cat < /dev/null > $TMP_DEST/user.explode.orgs
+    
+    # We do this in three main passes - first, the organisations, then the closed groups and lastly the restrictions
+    # We also have a pre-processing pass and a post-processing pass, for a total of five passes through the input file 
+
+    log "    Pre-processing" $DEBUG
+    # Before we do the first proper pass, pre-process to normalise blank values as this makes later regexes much easier to understand
+    cat < $1 | sed 's/||/|SPECIALBLANKVALUE|/g' > $TMP_DEST/user.explode.orgs.in
+    cat < $TMP_DEST/user.explode.orgs.in | sed 's/|$/|SPECIALBLANKVALUE/' > $TMP_DEST/user.explode.orgs
+    
+    # Pass 1 - Organisations
+    log "    Exploding Organisations" $DEBUG
+    for USERLINE in `cat < $TMP_DEST/user.explode.orgs`
+    do
+        STATIC_FIRST_PART=`echo $USERLINE | cut -d \| -f 1`
+        STATIC_FINAL_PART=`echo $USERLINE | cut -d \| -f 3-4`
+        PART_TO_PERM=`echo $USERLINE | cut -d \| -f 2 | sed 's/,/,\n/g'`
+        cat < /dev/null > $TMP_DEST/user.explode.orgs.work
+        for f in $PART_TO_PERM
+        do
+                echo $f >> $TMP_DEST/user.explode.orgs.work
+        done
+        ORG_POWER_SET=` perl -le '
+                            sub powset {
+                                return [[]] unless @_;
+                                my $head = shift;
+                                my $list = &powset;
+                                [@$list, map { [$head, @$_] } @$list]
+                            }
+                            chomp(my @e = <>);
+                                for $p (@{powset(@e)}) {
+                                print @$p;
+                        }' < $TMP_DEST/user.explode.orgs.work`
+        for permuted_org in $ORG_POWER_SET
+        do
+            if [ `echo $permuted_org | grep ',$'` ]
+            then
+                permuted_org="${permuted_org%?}"
+            fi
+            echo "$STATIC_FIRST_PART|$permuted_org|$STATIC_FINAL_PART" >> $TMP_DEST/user.explode.orgs
+        done
+    done
+    
+    # Pass 2 - Groups - note the logic here is different because we can only have one restriction applied
+    log "Exploding Restrictions" $DEBUG
+    for USERLINE in `cat < $TMP_DEST/user.explode.orgs`
+    do
+        STATIC_PART=`echo $USERLINE | cut -d \| -f 1-2`
+        STATIC_FINAL_PART=`echo $USERLINE | cut -d \| -f 4`
+        PART_TO_VARY=`echo $USERLINE | cut -d \| -f 3 | sed 's/,/,\n/g'`
+        
+        cat < /dev/null > $TMP_DEST/user.explode.orgs.work
+        for f in $PART_TO_VARY
+        do
+            if [ `echo $f | grep ',$'` ]
+            then
+                f="${f%?}"
+            fi
+            echo "$STATIC_PART|$f|$STATIC_FINAL_PART" >> $TMP_DEST/user.explode.orgs
+        done
+    done
+    
+    # Pass 3 - Restrictions - back to powerset logic here
+    log "Exploding Closed Groups" $DEBUG
+    for USERLINE in `cat < $TMP_DEST/user.explode.orgs`
+    do
+        STATIC_FIRST_PART=`echo $USERLINE | cut -d \| -f 1-3`
+        PART_TO_PERM=`echo $USERLINE | cut -d \| -f 4 | sed 's/,/,\n/g'`
+        
+        cat < /dev/null > $TMP_DEST/user.explode.orgs.work
+        for f in $PART_TO_PERM
+        do
+                echo $f >> $TMP_DEST/user.explode.orgs.work
+        done
+        CG_POWER_SET=` perl -le '
+                            sub powset {
+                                return [[]] unless @_;
+                                my $head = shift;
+                                my $list = &powset;
+                                [@$list, map { [$head, @$_] } @$list]
+                            }
+                            chomp(my @e = <>);
+                                for $p (@{powset(@e)}) {
+                                print @$p;
+                        }' < $TMP_DEST/user.explode.orgs.work`
+        for permuted_cg in $CG_POWER_SET
+        do
+            if [ `echo $permuted_cg | grep ',$'` ]
+            then
+                permuted_cg="${permuted_cg%?}"
+            fi
+            echo "$STATIC_FIRST_PART|$permuted_cg" >> $TMP_DEST/user.explode.orgs
+        done
+    done
+
+   # We now do a post-processing pass.  We've left some duplicate entries around, and need to replace our fake blank values with real blank values
+   log "Performing post-processing" $DEBUG
+   cat < $TMP_DEST/user.explode.orgs | sort | uniq | sed 's/SPECIALBLANKVALUE//g' > $2
+   log "$1 has been exploded into $2" $INFO
+}
+
+################
+# Used by getUserName, getOrganisation and getGroups to access a specific entry in the
+# parsed user configuration.
+#
+# See the documentation of getUserName for further details
+################
+function getUserLine {
+    if [ -z "$USERS" ]
+    then
+        log "A user configuration must be defined.  Call readUserConfiguration before getUserName to resolve this issue" $ERROR
+        return
+    fi
+    
+    #Get the 'real' index into the users array
+    IDX=`expr $1 % ${#USERS[@]}`
+    USERLINE=${USERS[$IDX]} 
+}
+
+################
+#
+# Get the username for a given index into the user configuration.  Stores the result
+# in the USERNAME variable
+#
+# Indexes wrap around, so if we have 30 users defined but specify and index of 97,
+# this function will retrieve the 7th user.  We use this behaviour to round-robin
+# through the various configured users.
+#
+# Parameters
+#   1   -   Index into the configured list of users to return
+function getUserName {
+    getUserLine $1
+    USERNAME=`echo $USERLINE | sed 's/\/.*//'`
+}
+
+################
+#
+# Operates as per getUserName, but retrieves the organisation for that user.
+# Stores it's result in the ORGANISATIONS variable
+#
+################
+function getOrganisations {
+    getUserLine $1
+    ORGANISATIONS=`echo $USERLINE | sed 's/[^|]*|//' | sed 's/|.*//'`
+    
+    # At this point we have the selected organisations for the user, but 
+    # we need to ensure that the organisation the user is actually in is always
+    # present, and add it if it isn't
+    USER_NAME=`echo $USERLINE | sed 's/\/.*//'`
+    echo $USER_NAME | grep -q -
+    
+    # If this is not true, then there is no dash in the username, so assume user has access to every org
+    if [ $? -eq 0 ]
+    then
+        ORG_FROM_USER_NAME=`echo $USER_NAME | sed 's/.*-//' | tr '[:lower:]' '[:upper:]'`
+        echo $ORGANISATIONS | grep -q $ORG_FROM_USER_NAME
+        if [ $? -eq 1 ]
+        then
+            ORGANISATIONS=$ORGANISATION,$ORG_FROM_USER_NAME
+        fi
+    fi
+    
+    #Remove leading , if present
+    echo $ORGANISATIONS | grep -q '^,'
+    if [ $? -eq 0 ]
+    then
+        ORGANISATIONS=`echo $ORGANISATIONS | cut -c 2-`
+    fi
+}
+
+################
+#
+# Operates as per getUserName, but retrieves the security groups for that user.
+# Stores it's result in the SECURITY_GROUPS variable
+#
+################
+function getSecurityGroups {
+    getUserLine $1
+    SECURITY_GROUPS=`echo $USERLINE | sed 's/.*|//'`
+}
+
+################
+#
+# Operates as per getUserName, but retrieves the password for that user.
+# Stores it's result in the PASSWORD variable
+#
+################
+function getPassword {
+    getUserLine $1
+    PASSWORD=`echo $USERLINE | sed 's/.*\///' | sed 's/|.*//'`
+}
+
+################
+#
+# Creates a folder in alfresco.  Creates parent folders if applicable.
+# If the folder already exists, does nothing.  Assumes we already have an active
+# session established via getSession
+#
+# Parameters:
+#   1   -   The path within the site of the folder to create
+#
+################
+function createFolder {
+    local FILE_PATH=$1
+
+    log "Creating the folder at $FILE_PATH" $DEBUG
+    if [ $FILE_PATH = '/' -o $FILE_PATH = '%2F' ]
+    then
+        log "An attempt was made to create the document library root folder, which should already exist.  Aborting" $ERROR
+        exit 1
+    fi
+
+    for i in "${FOLDER_NAME_CACHE[@]}"; do
+       [[ "$i" == "$FILE_PATH" ]] && log "Skipping the folder we've already created at $FILE_PATH" $DEBUG && return
+    done
+
+    FOLDER_NAME_CACHE+=("$FILE_PATH")
+    
+    local PARENT_NODEREF=""
+    getParentNoderef `dirname $FILE_PATH`
+    if [ "$PARENT_NODEREF" = "" ]
+    then
+        createFolder "`dirname $FILE_PATH`"
+        getParentNoderef `dirname $FILE_PATH`
+    fi
+    
+    TARGET="http://$HOSTNAME/share/proxy/alfresco/api/type/cm_folder/formprocessor"
+    BASENAME=`basename $FILE_PATH`
+    
+    getTextValue; FOLDER_TITLE=`echo $CURRENT_TEXT | sed 's/ /\\ /g'`
+    getTextValue; FOLDER_DESCRIPTION=`echo $CURRENT_TEXT | sed 's/ /\\ /g'`
+    log "Parent NodeRef: $PARENT_NODEREF" $DEBUG
+
+    NODEREF=`curl -s -w "%{http_code}" -k -b $COOKIE_JAR -H "Content-Type: application/json" -X POST -d \{\"alf_destination\":\"$PARENT_NODEREF\",\"prop_cm_name\":\"$BASENAME\",\"prop_cm_title\":\"$FOLDER_TITLE\",\"prop_cm_description\":\"$FOLDER_DESCRIPTION\"\} "$TARGET"|grep -o '\w*://\w*/[-0-9a-z]*'`
+    if [ ! -z $NODEREF ]
+    then
+        log "Folder $FILE_PATH created with noderef $NODEREF" $INFO
+
+	TARGET="http://$HOSTNAME/share/proxy/alfresco/slingshot/doclib/action/permissions/set/site/$TARGET_SITE"
+
+echo "curl -o /dev/null -s -w \"%{http_code}\" -k -b $COOKIE_JAR -H "Content-type: application/json" -X POST -d \{\"nodeRefs\":[\"$NODEREF\"],\"permissions\":[\{\"group\":\"GROUP_site_${TARGET_SITE}_SiteContributor\",\"role\":\"SiteCollaborator\"\},\{\"group\":\"GROUP_site_${TARGET_SITE}_SiteConsumer\",\"role\":\"SiteCollaborator\"\},\{\"group\":\"GROUP_site_${TARGET_SITE}_SiteCollaborator\",\"role\":\"SiteCollaborator\"\}]\} \"$TARGET\""
+
+        RESULT=`curl -o /dev/null -s -w "%{http_code}" -k -b $COOKIE_JAR -H "Content-type: application/json" -X POST -d \{\"nodeRefs\":[\"$NODEREF\"],\"permissions\":[\{\"group\":\"GROUP_site_${TARGET_SITE}_SiteContributor\",\"role\":\"SiteCollaborator\"\},\{\"group\":\"GROUP_site_${TARGET_SITE}_SiteConsumer\",\"role\":\"SiteCollaborator\"\},\{\"group\":\"GROUP_site_${TARGET_SITE}_SiteCollaborator\",\"role\":\"SiteCollaborator\"\}]\} "$TARGET"`
+        if [ "200" -eq $RESULT ]; then
+            log "Successfully set permissions on $FILE_PATH" $INFO
+	else
+            log "Failed to set permissions on $FILE_PATH" $ERROR
+	fi
+    else
+        log "Failed to create folder $FILE_PATH" $DEBUG
+    fi
+}
+
+################
+#
+# Gets the nodeRef of a folder, and stores the result in the PARENT_NODEREF variable.
+# If the folder doesn't exist, sets PARENT_NODEREF to the empty string.
+# Used by createFolder.
+#
+# This method maintains a cache of previously visited folders in the FOLDER_NODEREFS global variable,
+# which is declared at the top of this file.  Creation and deletion of folders while this script is 
+# running will cause the cache to become out of date.
+#
+# Parameters:
+#   1   -   Path of the folder to inspect
+#
+################
+function getParentNoderef {
+
+    log "Input: $1" $DEBUG
+    ESCAPED_FILE_PATH=`echo $1 | perl -p -e 's/([^A-Za-z0-9])/sprintf("%%%02X", ord($1))/seg' | sed 's/%2E/./g' | sed 's/%0A//g' | sed 's/%2F/\//g'` # Escapes everything except / charecters
+    
+    SIMPLIFIED_FILE_PATH=`echo $ESCAPED_FILE_PATH | sed 's/[^a-Z0-9]/_/g'` # Bash variable-name-friendly version
+    CACHE_VARIABLE=`echo $"$FOLDER_CACHE_PREFIX$SIMPLIFIED_FILE_PATH"`
+    log "Cache Variable: $CACHE_VARIABLE" $DEBUG
+    log "Simplified file path: $SIMPLIFIED_FILE_PATH" $DEBUG
+    
+    if [ `eval "echo $"$CACHE_VARIABLE` ]
+    then
+        log "Folder $ESCAPED_FILE_PATH found in cache" $DEBUG
+        PARENT_NODEREF=`eval "echo $"$CACHE_VARIABLE`
+        log "Parent NodeRef Retrieved from cache: $PARENT_NODEREF" $DEBUG
+        return
+    fi
+    log "Cache miss for folder $ESCAPED_FILE_PATH" $DEBUG
+    
+    TARGET_PATH=$ESCAPED_FILE_PATH
+    if [ $ESCAPED_FILE_PATH = '.' ]
+    then
+        log "Retrieving details of root folder" $DEBUG
+        TARGET_PATH=''
+    fi
+    
+    TARGET=http://$HOSTNAME/share/proxy/alfresco/slingshot/doclib/doclist/all/site/$TARGET_SITE/documentLibrary/$TARGET_PATH
+    log "Using following URL to retrieve folder details: $TARGET" $DEBUG
+    RESULT=`curl -k -b $COOKIE_JAR $TARGET 2>/dev/null | grep nodeRef | head -1 | sed 's/.*nodeRef....//' | sed 's/\\".*//'`
+    log "Noderef for $ESCAPED_FILE_PATH : $RESULT" $DEBUG
+    PARENT_NODEREF="$RESULT"
+
+    if [ -z "$PARENT_NODEREF" ]; then
+        RESULT=`curl -o /dev/null -s -w "%{http_code}" -k -b $COOKIE_JAR "$TARGET"`
+        log "Could not find parent noderef for ${TARGET} (HTTP code $RESULT)." $ERROR
+        if [ $RESULT -eq "302" ]; then
+            log "A 302 indicates a CAS redirect; check you can login using the provided account details." $ERROR
+        elif [ $RESULT -eq "000" ]; then
+            log "A 000 indicates a connection could not be opened. Check Apache is running." $ERROR
+        fi
+        exit 1
+    fi
+
+    log "Saving in cache: $PARENT_NODEREF" $DEBUG
+    eval `echo "$CACHE_VARIABLE=\"$RESULT"\"` # Cache the result
+}
+
+################
+#
+# Gets a pseudo-random collection of tags and stored them in the CURRENT_TAGS variable
+# With the same offset and list of tags specified in the configuration file, repeated invocations 
+# of this function will generate the same sequence of tags.  The PRNG is reseeded at the top of
+# this script.
+#
+# The value stored in CURRENT_TAGS is formatted as a space seperated list of Strings eg
+#   tagOne tagTwo tagThree
+#
+#  This function does not accept any parameters
+#
+################
+function getTagString
+{
+    CURRENT_TAGS=""
+    nextNumber
+    NUMBER_OF_TAGS_TO_USE=`expr $CURRENT_NUMBER % ${#AVAILABLE_TAGS[@]}`
+    log "Applying $NUMBER_OF_TAGS_TO_USE tags" $DEBUG
+    for count in `seq 1 $NUMBER_OF_TAGS_TO_USE`
+    do
+        nextNumber
+        CURRENT_TAGS="$CURRENT_TAGS ${AVAILABLE_TAGS[`expr $CURRENT_NUMBER % ${#AVAILABLE_TAGS[@]}`]}"
+    done
+    CURRENT_TAGS=`echo $CURRENT_TAGS | cut -c 2-` # Remove leading space
+    log "Applying tags: $CURRENT_TAGS" $DEBUG
+}
+
+################
+#
+# Similar to getTagString above, this function constructs a text string out of an available set of words defined in
+# the properties file, and stores the results in the CURRENT_TEXT variable
+#
+################
+function getTextValue
+{
+    CURRENT_TEXT=""
+    nextNumber
+    NUMBER_OF_WORDS_TO_USE=`expr $CURRENT_NUMBER % ${#AVAILABLE_WORDS_FOR_TEXT_FIELDS[@]}`
+    log "Creating a text field with $NUMBER_OF_WORDS_TO_USE words in it" $DEBUG
+    for count in `seq 1 $NUMBER_OF_WORDS_TO_USE`
+    do
+        CURRENT_TEXT="$CURRENT_TEXT ${AVAILABLE_WORDS_FOR_TEXT_FIELDS[`expr $RANDOM % ${#AVAILABLE_WORDS_FOR_TEXT_FIELDS[@]}`]}"
+    done
+    CURRENT_TEXT=`echo $CURRENT_TEXT | cut -c 2-` # Remove leading space
+}
+

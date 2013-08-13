@@ -1,0 +1,35 @@
+# Sample data load execution script.  Copy and modify as required
+
+
+# Always keep this line, which imports the data loading libraries
+. ./dataLoad.lib
+
+# Sample over-riding of properties from the generic properties file
+# There's no _need_ to declare these variables here, they will be picked
+# up from dataLoad.properties if not specified here, but we are demonstrating
+# how they can be overridden
+#
+# If you just want a 'standard' data load script, then you may not need to override anything here
+
+WIKIS_TO_LOAD=100
+DOCUMENTS_TO_LOAD=100
+DISCUSSIONS_TO_LOAD=100
+
+DOCUMENT_ROOT=/var/data/documents
+WIKI_ROOT=/var/data/wikis
+DISCUSSION_ROOT=/var/data/discussions
+
+# Explode the user specification referenced by the generic dataLoad.properties.  This is optional,
+# if the file at $USERSPEC_LOCATION is already exploded, for instance, then we won't want to do it again
+explodeUserSpecification "$USERSPEC_LOCATION" ./.exploded_userSpec
+
+# We always need to read at least one user configuration file - in this case, use the one we just exploded
+readUserConfiguration ./.exploded_userSpec
+
+loadFromFileSystem "$DOCUMENT_ROOT" $DOCUMENTS_TO_LOAD $OFFSET "DOCUMENT" "$FILESPEC_LOCATION"
+loadFromFileSystem "$WIKI_ROOT" $WIKIS_TO_LOAD $OFFSET "WIKI"
+loadFromFileSystem "$DISCUSSION_ROOT" $DISCUSSIONS_TO_LOAD $OFFSET "DISCUSSION"
+
+log "Load complete." $INFO
+log "$WARN_COUNT warnings." $WARN
+log "$ERROR_COUNT errors." $ERROR

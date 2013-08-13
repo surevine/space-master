@@ -1,0 +1,21 @@
+HOW TO CREATE A PATCH FOR ALFRESCO
+
+
+1)  Write your patch as a bash script
+2)  Put you bash script into a working directory with the following files (TODO:  Jenkins Job?)
+    * patch_alfresco.sh
+    * integration.properties
+    * shell.properties
+    * version.html
+    * version.properties
+    * modify-properties.sh
+    * any other files your patch needs
+3)  Edit version.properties by hand
+4)  Edit the line at the top of patch_alfresco.sh to point at the script you have created for your patch
+5)  Zip up the directory
+6)  Test the patch - you should simply be able to unzip the patch zip file, then run ./patch_alfresco.sh integration.properties - no need to restart or backup alfresco, the script will do it for you
+7)  Upload the patch to nexus to distribute to the customer.  See the branching and versioning strategy on the wiki for details of where to upload it to
+
+There isn't a patch_share.sh at the time of writing but if you need one, just create it - simply a matter of changing the target .war file
+
+While writing your script use "exit 5" to bug out if something is wrong

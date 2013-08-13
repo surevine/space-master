@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+
+<!-- 
+This build file creates an Alfresco or Share AMP file
+Edit the first three properties and you're away
+
+The default target will create an amp file
+and the "cleanAndApply" target will apply
+that AMP to the target war
+-->
+
+<project name="MIS" default="build" basedir="." xmlns:artifact="antlib:org.apache.maven.artifact.ant">
+    
+    <property name="build.dir" value="../release" />
+	<property name="jar.file" value="mis.jar" />
+	
+    <target name="build" description="Just zips everything up">
+    	
+        <delete dir="${build.dir}" includeEmptyDirs="true" quiet="yes" />
+        <mkdir dir="${build.dir}" />
+        <jar destfile="${build.dir}/${jar.file}">
+            <fileset dir="../source" includes="**/*" />
+        </jar>
+    </target>
+
+</project>

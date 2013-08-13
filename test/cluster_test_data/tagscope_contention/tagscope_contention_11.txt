@@ -1,0 +1,7 @@
+Hello world.
+
+This is a short text document to test for tagscope contention.
+
+That is all.
+
+End of file.

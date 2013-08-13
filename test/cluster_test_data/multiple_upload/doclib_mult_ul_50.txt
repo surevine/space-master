@@ -1,0 +1,11 @@
+Hello, World.
+
+This is a sample text document.
+
+It's not very large.
+
+It's designed to test the uploading of multiple documents in a clustered environment.
+
+That is all.
+
+File ends.

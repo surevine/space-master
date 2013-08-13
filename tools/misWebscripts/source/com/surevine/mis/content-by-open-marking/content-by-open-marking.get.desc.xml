@@ -1,0 +1,9 @@
+<webscript>
+   <shortname>Content by organisation</shortname>
+   <description>Displays content within a given thematic group</description>
+   <url>/surevine/mis/thematic-groups/{marking}/content</url>
+   <url>/surevine/mis/site/{site}/thematic-groups/{marking}/content</url>
+   <format default="html">any</format>
+   <authentication>admin</authentication>
+   <transaction>none</transaction>
+</webscript>

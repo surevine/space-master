@@ -1,0 +1,51 @@
+#!/bin/bash
+
+CURL="curl -skL -c cookies.txt -b cookies.txt"
+
+function do_cas_login() {
+    echo "Requesting CAS login for user: ${USER}"
+
+    # Request login form and extract lt field
+    LT=`${CURL} https://${SHARE_HOST}/share|grep "<input type=\"hidden\" name=\"lt\"" | cut -d \" -f6`
+    
+    # Submit login form
+    ${CURL} -X POST -d "username=${USER}&password=${PASS}&lt=${LT}&_eventId=submit&submit=Sign%20In" https://${CAS_HOST}/cas/login?service=https%3a%2f%2f${SHARE_HOST}%2fshare%2f >/dev/null
+
+    echo "CAS login submitted."
+}
+
+function archive_item() {
+    echo "Archiving item ${1}"
+
+    # We have to mark for delete and then we can archive
+    ${CURL} -X POST -H "Content-Type: application/json" -d "{\"nodeRefs\":[\"\${1}\"]}" https://${SHARE_HOST}/share/proxy/alfresco/slingshot/doclib/action/sv-theme/delete/markForDelete?nodeRef=${1} >/dev/null
+
+    RESPONSE=`${CURL} -X POST -H "Content-Type: application/json" -d "{\"nodeRefs\":[\"\${1}\"]}" https://${SHARE_HOST}/share/proxy/alfresco/slingshot/doclib/action/sv-theme/delete/archive?nodeRef=${1}`
+
+    if [[ ${#RESPONSE} == 22 ]]; then
+        echo "    ...success."
+    else
+        echo "    ...failed."
+    fi
+}
+
+if [[ $# != 2 ]]; then
+    echo "Usage: bulkarchive <config> <nodelist>"
+    echo "        e.g.: ./bulkarchive config.txt nodelist.txt"
+    exit 1
+fi
+
+source "$1"
+
+nodes=($(cat $2))
+
+do_cas_login
+
+for i in $(seq 0 $((${#nodes[@]} - 1))); do
+    archive_item ${nodes[$i]}
+done
+
+# Clean up
+if [ -f cookies.txt ]; then
+    rm cookies.txt
+fi

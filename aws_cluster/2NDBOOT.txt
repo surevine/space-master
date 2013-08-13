@@ -1,0 +1,4 @@
+#!/bin/sh
+rm /var/lib/cloud/sem/consume_userdata*
+rm /var/lib/cloud/sem/user-scripts*
+

@@ -1,0 +1,5 @@
+# Values must be URL encoded. User must be a deleter.
+CAS_HOST=10.66.2.129
+SHARE_HOST=10.66.2.129
+USER=admin
+PASS=mypassword

@@ -1,0 +1,238 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE beans PUBLIC '-//SPRING//DTD BEAN//EN' 'http://www.springframework.org/dtd/spring-beans.dtd'>
+<!-- Licensed to the Apache Software Foundation (ASF) under one or more contributor 
+	license agreements. See the NOTICE file distributed with this work for additional 
+	information regarding copyright ownership. The ASF licenses this file to 
+	You under the Apache License, Version 2.0 (the "License"); you may not use 
+	this file except in compliance with the License. You may obtain a copy of 
+	the License at http://www.apache.org/licenses/LICENSE-2.0 Unless required 
+	by applicable law or agreed to in writing, software distributed under the 
+	License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS 
+	OF ANY KIND, either express or implied. See the License for the specific 
+	language governing permissions and limitations under the License. -->
+<beans>
+
+	<bean id="aclEntryVoter"
+		class="org.alfresco.repo.security.permissions.impl.acegi.ACLEntryVoter"
+		abstract="false" singleton="true" lazy-init="default" autowire="default"
+		dependency-check="default">
+		<property name="permissionService">
+			<ref bean="permissionService"></ref>
+		</property>
+		<property name="namespacePrefixResolver">
+			<ref bean="namespaceService"></ref>
+		</property>
+		<property name="nodeService">
+			<ref bean="nodeService"></ref>
+		</property>
+		<property name="authenticationService">
+			<ref bean="authenticationService" />
+		</property>
+		<property name="authorityService">
+			<ref bean="authorityService" />
+		</property>
+		<property name="abstainFor">
+			<set>
+				<value>{http://www.alfresco.org/model/recordsmanagement/1.0}filePlanComponent</value>
+				<value>{http://www.alfresco.org/model/enhancedSecurity/0.3}enhancedSecurityLabel</value>
+			</set>
+		</property>
+	</bean>
+
+	<bean id="enhancedSecurityConstraintInit"
+		class="com.surevine.alfresco.esl.impl.EnhancedSecurityConstraint">
+		<property name="caveatConfigService" ref="caveatConfigService" />
+		<property name="enhancedSecurityLocator" ref="enhancedSecurityConstraintLocator" />
+	</bean>
+
+	<bean id="enhancedSecurityConstraintLocator"
+		class="com.surevine.alfresco.esl.impl.EnhancedSecurityConstraintLocator">
+		<property name="dictionaryService" ref="dictionaryService" />
+	</bean>
+
+	<bean id="webscript.org.alfresco.rma.admin.groupdetails.get"
+		class="com.surevine.alfresco.esl.impl.GroupDetailsWebscript" parent="webscript">
+		<property name="dictionaryService" ref="DictionaryService" />
+		<property name="caveatConfigService" ref="CaveatConfigService" />
+	</bean>
+
+	<!-- Java script interface for rm caveat config -->
+	<bean id="ESLrmConfigServiceScript" parent="baseJavaScriptExtension"
+		class="com.surevine.alfresco.esl.ESLScriptRMCaveatConfigService">
+		<property name="extensionName">
+			<value>ESLCaveatConfig</value>
+		</property>
+		<property name="caveatConfigService" ref="caveatConfigService" />
+		<property name="authorityService" ref="authorityService" />
+	</bean>
+	
+	    <!-- Java script interface for rm caveat config-->
+    <bean id="rmConfigServiceScript" parent="baseJavaScriptExtension" class="org.alfresco.module.org_alfresco_module_dod5015.caveat.ScriptRMCaveatConfigService">
+        <property name="extensionName">
+            <value>caveatConfig</value>
+        </property>
+        <property name="caveatConfigService" ref="caveatConfigService"/>
+        <property name="authorityService" ref="authorityService"/>
+    </bean>
+
+	<bean id="accessDecisionManager"
+		class="org.alfresco.repo.security.permissions.impl.acegi.AffirmativeBasedAccessDecisionManger">
+		<property name="allowIfAllAbstainDecisions">
+			<value>false</value>
+		</property>
+		<property name="decisionVoters">
+			<list>
+				<ref bean="roleVoter" />
+				<ref bean="groupVoter" />
+				<ref bean="aclEntryVoter" />
+				<ref bean="rmEntryVoter" />
+				<ref bean="escEntryVoter" />
+			</list>
+		</property>
+	</bean>
+
+	<bean id="afterRm"
+		class="com.surevine.alfresco.esl.impl.PermissiveRMAfterInvocationProvider"></bean>
+
+	<bean id="afterESC"
+		class="com.surevine.alfresco.esl.impl.ESCAfterInvocationProvider">
+		<property name="caveatComponent">
+			<ref bean="caveatConfigComponent" />
+		</property>
+		<property name="nodeService">
+			<ref bean="nodeService" />
+		</property>
+		<property name="frequencyOfReportingOnMissingNodesInMillis">
+			<value>600000</value>
+		</property>
+	</bean>
+
+	<bean id="afterInvocationManager"
+		class="net.sf.acegisecurity.afterinvocation.AfterInvocationProviderManager">
+		<property name="providers">
+			<list>
+				<ref bean="afterAcl" />
+				<ref bean="afterRm" />
+				<ref bean="afterESC" />
+			</list>
+		</property>
+	</bean>
+
+	<bean id="escEntryVoter" class="com.surevine.alfresco.esl.impl.ESCEntryVoter">
+		<property name="caveatComponent">
+			<ref bean="caveatConfigComponent" />
+		</property>
+		<property name="nodeServiceMethodInterceptionService">
+			<ref bean="nodeMethodService" />
+		</property>
+		<property name="nodeService">
+		  <ref bean="nodeService"/>
+		</property>
+		<property name="dictionaryService">
+		  <ref bean="dictionaryService"/>
+		</property>
+		<property name="permissionService">
+          <ref bean="permissionService"/>
+        </property>
+        <property name="authorityService">
+          <ref bean="authorityService"/>
+        </property>
+	</bean>
+
+	<bean id="nodeMethodService"
+		class="com.surevine.alfresco.esl.impl.NodeServiceMethodInterceptionServiceImpl">
+		<property name="nodeService">
+			<ref bean="nodeService" />
+		</property>
+	</bean>
+
+	<!--<bean id="esl_bootstrap_Data" class="org.alfresco.repo.module.ImporterModuleComponent" 
+		parent="module.baseComponent"> <property name="moduleId" value="repo.esl.module"/> 
+		<property name="name" value="esl_bootstrap_Data"/> <property name="description" 
+		value="Bootstrap ESL data"/> <property name="sinceVersion" value="1.0"/> 
+		<property name="appliesFromVersion" value="1.0"/> -->
+	<!-- Data properties -->
+	<!--<property name="importer" ref="spacesBootstrap"/> <property name="bootstrapViews"> 
+		<list> <props> <prop key="path">/${spaces.company_home.childname}/${spaces.dictionary.childname}</prop> 
+		<prop key="location">alfresco/module/repo.esl.module/bootstrap/ESLDataDictionaryBootstrap.xml</prop> 
+		</props> </list> </property> </bean> -->
+
+	<bean
+		id="webscript.com.surevine.alfresco.esl.impl.webscript.visibility.VisibilityList.get"
+		class="com.surevine.alfresco.esl.impl.webscript.visibility.VisibilityList"
+		parent="webscript">
+		<property name="nodeService">
+			<ref bean="nodeService" />
+		</property>
+		<property name="caveatConfigService">
+			<ref bean="caveatConfigService" />
+		</property>
+		<property name="personService">
+			<ref bean="PersonService" />
+		</property>
+		<property name="visibilityUtil">
+            <ref bean="com.surevine.alfresco.esl.impl.webscript.visibility.VisibilityUtil"/>
+        </property>
+	</bean>
+
+	<bean
+		id="webscript.com.surevine.alfresco.esl.impl.webscript.visibility.VisibilityCount.get"
+		class="com.surevine.alfresco.esl.impl.webscript.visibility.VisibilityCount"
+		parent="webscript">
+		<property name="caveatConfigService">
+			<ref bean="caveatConfigService" />
+		</property>
+		<property name="personService">
+			<ref bean="PersonService" />
+		</property>
+		<property name="visibilityUtil">
+            <ref bean="com.surevine.alfresco.esl.impl.webscript.visibility.VisibilityUtil"/>
+        </property>
+	</bean>
+
+    <bean
+        id="webscript.com.surevine.alfresco.esl.impl.webscript.visibility.SharedVisibilityReport.get"
+        class="com.surevine.alfresco.esl.impl.webscript.visibility.SharedVisibilityReport"
+        parent="webscript">
+        <property name="caveatConfigService">
+            <ref bean="caveatConfigService" />
+        </property>
+        <property name="nodeService">
+            <ref bean="nodeService"/>
+        </property>
+        <property name="authenticationService">
+            <ref bean="authenticationService"/>
+        </property>
+        <property name="presenceService">
+            <ref bean="com.surevine.alfresco.presence.PresenceService"/>
+        </property>
+        <property name="personService">
+            <ref bean="personService"/>
+        </property>
+        <property name="groupName">
+            <value>es:validClosedMarkings</value>
+        </property>
+        <property name="displayName">
+            <value>Groups</value>
+        </property>
+        <property name="visibilityUtil">
+            <ref bean="com.surevine.alfresco.esl.impl.webscript.visibility.VisibilityUtil"/>
+        </property>
+    </bean>
+	
+	<bean id="com.surevine.alfresco.esl.impl.webscript.visibility.VisibilityUtil" class="com.surevine.alfresco.esl.impl.webscript.visibility.VisibilityUtil">
+	   <property name="locator">
+	       <ref bean="enhancedSecurityConstraintLocator"/>
+	   </property>
+	   <property name="presenceService">
+           <ref bean="com.surevine.alfresco.presence.PresenceService"/>
+       </property>
+       <property name="nodeService">
+            <ref bean="nodeService"/>
+       </property>
+       <property name="personService">
+            <ref bean="personService"/>
+       </property>
+	</bean>
+
+</beans>

@@ -1,0 +1,66 @@
+#!/bin/bash
+
+#
+# Allows starting/restarting all services in the cluster.
+#
+
+export CATALINA_PID="catalina.pid"
+
+CLUSTER_DIR="/opt"
+CLUSTER_PREFIX="alfresco-"
+
+INSTANCES=`find ${CLUSTER_DIR} -maxdepth 1 -type d -name "${CLUSTER_PREFIX}*" | sort`
+
+start() {
+    if [ $# == 0 ]; then
+	sudo -E -u apps ${CLUSTER_DIR}/${CLUSTER_PREFIX}admin/alfresco.sh start 1>/dev/null 2>&1
+	sudo -E -u apps ${CLUSTER_DIR}/${CLUSTER_PREFIX}be01/alfresco.sh start 1>/dev/null 2>&1
+	sudo -E -u apps ${CLUSTER_DIR}/${CLUSTER_PREFIX}fe01/alfresco.sh start 1>/dev/null 2>&1
+    else
+        for arg in "$@"; do
+            if [ -x ${CLUSTER_DIR}/${CLUSTER_PREFIX}${arg}/alfresco.sh ]; then
+		sudo -E -u apps ${CLUSTER_DIR}/${CLUSTER_PREFIX}${arg}/alfresco.sh start 1>/dev/null 2>&1
+	    else
+		echo "Unrecognised instance $arg"
+            fi
+        done
+    fi
+}
+
+stop() {
+    if [ $# == 0 ]; then
+        for i in $INSTANCES; do
+	    sudo -E -u apps ${i}/alfresco.sh stop 1>/dev/null 2>&1
+	    if [ -f "${i}/catalina.pid" ]; then rm ${i}/catalina.pid; fi
+        done
+    else
+        echo "Unsupported operation. Sorry."
+    fi
+}
+
+status() {
+    for i in $INSTANCES; do
+        if [ -f ${i}/catalina.pid ]; then
+	    echo -e "${i}\t: ON"
+        else
+	    echo -e "${i}\t: \e[00;31mOFF\e[00m"
+        fi
+    done
+}
+
+case "$1" in
+  start)
+	ARGS=($@)
+        start ${ARGS[@]:1}
+        ;;
+  stop)
+        ARGS=(@)
+        stop ${ARGS[@]:1}
+        ;;
+  status)
+        status
+        ;;
+  *)
+        echo $"Usage: $prog {start|stop|status}"
+        exit 1
+esac
