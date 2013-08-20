@@ -1,48 +1,24 @@
-/**
- * A simple script designed to provide metrics on the fidelity of document preview.
+/*
+ * Copyright (C) 2008-2010 Surevine Limited.
+ *   
+ * Although intended for deployment and use alongside Alfresco this module should
+ * be considered 'Not a Contribution' as defined in Alfresco'sstandard contribution agreement, see
+ * http://www.alfresco.org/resource/AlfrescoContributionAgreementv2.pdf
  * 
- * Run with no parameters, this script examines every document (wiki pages, discussions and system files are ignored)
- * and records whether it has a preview and/or thumbnail created, whether it has a failure record for the preview or thumbnail
- * or whether the preview or thumbnail is simply missing.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  * 
- * Results are then summarised by file extension.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  * 
- * An optional parameter named 'filter' can be supplied to restrict the results to those matching a specific lucene search term,
- * usually a date range.  Multiple paramaters could be supplied with AND statements or even brackets, although it should be noted
- * that this has not been fully tested - at present we only intend to use this script with date ranges.
- * 
- * To install the script, simply log into Alfresco Explorer as admin and upload it to the following location:
- * 
- * Company Home -> Data Dictionary -> Scripts
- * 
- * To execute the script, visit the following URL as admin:
- * 
- * http://backend.box/alfresco/command/script/execute?scriptPath=/Company Home/Data Dictionary/Scripts/summarise-previews.js
- * 
- * To execute the script with a date range, use:
- * 
- * http://backend.box/alfresco/command/script/execute?scriptPath=/Company%20Home/Data%20Dictionary/Scripts/summarise-previews.js&filter=@cm\:modified:[2013-5-20T00:00:00%20TO%202013-6-25T00:00:00]
- * 
- * Or, more simply:
- * 
- * http://backend.box/alfresco/command/script/execute?scriptPath=/Company%20Home/Data%20Dictionary/Scripts/summarise-previews.js&filter=@cm\:modified:[2013-5-20T00:00:00%20TO%20NOW]
- * 
- * 
- * Note that this script uses a lucene search under the hood.  This means that there will be a results cut-off at 10,000 results
- * or after 100 seconds have been spent computing security for the search.  This should be sufficent to retrieve statistically 
- * useful results (in fact, on production this will probably retrieve the full result set).
- * 
- * On versions of Space prior to 3.1.1, however, these limits are 1,000 results and 10 seconds, which may be more limiting. This
- * can be changed in repository.properties.  The relevant properties are:
- * 
- * system.acl.maxPermissionCheckTimeMillis
- * system.acl.maxPermissionChecks
- * 
- * One final note - the results here require expert interpretation to be useful as there are many legitimate reasons why a 
- * document might be missing a preview aside from system error.  Raw results should not usually be shared with non-technical 
- * stakeholders, as they will misinterpret them.
- */
-
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+*/
 var HOSTNAME='INSERT.SPACE.HOSTNAME.HERE.IN.SCRIPT.FILE';
 
 
