@@ -42,4 +42,4 @@ createSession ${ALF_HOST} ${CAS_HOST} ${ADMIN_USER} ${ADMIN_PASS}
 
 NODE_REFS=$(cat nodeRefs.txt)
 
-curl -k -b $COOKIE_JAR --data "group=${1}&type=${2}&nodeRefs=$NODE_REFS" "http://10.66.2.169/alfresco/command/script/execute?scriptPath=/Company%20Home/Data%20Dictionary/Scripts/remove-group-by-nodes.js"
+curl -k -b $COOKIE_JAR --data "group=${1}&type=${2}&nodeRefs=$NODE_REFS" "http://${ALF_HOST}/alfresco/command/script/execute?scriptPath=/Company%20Home/Data%20Dictionary/Scripts/remove-group-by-nodes.js"
