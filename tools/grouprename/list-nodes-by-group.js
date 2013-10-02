@@ -53,8 +53,8 @@ function main() {
             continue;
         }
 
-        var organisations = results[i].properties["{http://www.alfresco.org/model/enhancedSecurity/0.3}organisations"];
-        var closedMarkings = results[i].properties["{http://www.alfresco.org/model/enhancedSecurity/0.3}closedMarkings"];
+        var organisations = "" + results[i].properties["{http://www.alfresco.org/model/enhancedSecurity/0.3}organisations"];
+        var closedMarkings = "" + results[i].properties["{http://www.alfresco.org/model/enhancedSecurity/0.3}closedMarkings"];
 
         try {
             results[i].displayPath;
