@@ -25,32 +25,20 @@ function removeCommentsFromList(listOfNodes)
     var outIdx=0;
 	for (i=0; i < listOfNodes.length; i++)
 	{
-		try {
-			node = listOfNodes[i];
-			out[outIdx]=new Object();
-			if (! (node.type=='{http://www.alfresco.org/model/forum/1.0}post' 
-				&& node.parent.name=='Comments' 
-				&& (node.parent.parent.parent.type=='{http://www.alfresco.org/model/content/1.0}content' || node.parent.parent.parent.type=='{http://www.alfresco.org/model/content/1.0}folder')) 
-				)
-			{
-				out[outIdx].node=node;
-				out[outIdx].modTime=node.properties['{http://www.alfresco.org/model/content/1.0}modified'];
-				out[outIdx].id=++outIdx;
-			}
-			else
-			{ // If we drop in here the node is a comment
-		      logger.log("Skipping node "+node+" as it looks like a comment");
-			}
-			//We're not actually going to use either of the next three variables, but we do want to throw 
-			//and catch an exception if there's an error retrieving them
-			var modifierFirstName = node.properties["cm:modifier"].properties["cm:firstName"];
-			var modifierSurname = node.properties["cm:modifier"].properties["cm:lastName"];
-			var modifier = node.properties['cm:modifier'];
-		}
-		catch (error)
+		node = listOfNodes[i];
+		out[outIdx]=new Object();
+		if (! (node.type=='{http://www.alfresco.org/model/forum/1.0}post' 
+			&& node.parent.name=='Comments' 
+			&& (node.parent.parent.parent.type=='{http://www.alfresco.org/model/content/1.0}content' || node.parent.parent.parent.type=='{http://www.alfresco.org/model/content/1.0}folder')) 
+			)
 		{
-			logger.log("Skipping node: "+listOfNodes[i]+" due to access issues");
-			continue;
+			out[outIdx].node=node;
+			out[outIdx].modTime=node.properties['{http://www.alfresco.org/model/content/1.0}modified'];
+			out[outIdx].id=++outIdx;
+		}
+		else
+		{ // If we drop in here the node is a comment
+	      logger.log("Skipping node "+node+" as it looks like a comment");
 		}
 	}
 	return trimToSize(out, outIdx);
