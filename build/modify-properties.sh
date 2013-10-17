@@ -182,6 +182,7 @@ do
     sed -f ${PROPS_FILE} ${FILE}.orig > ${FILE}
     sed -i s/@@CAS_HOSTNAME@@/${GUESSED_IP}/g ${FILE}
     sed -i s/@@SHARE_HOSTNAME@@/${GUESSED_IP}/g ${FILE}
+    sed -i s/@@HOST_ID@@/${GUESSED_IP/*./}/g ${FILE}
     rm ${FILE}.orig
 done
 

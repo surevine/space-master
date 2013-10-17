@@ -420,10 +420,6 @@ echo "Application Installed"
 
 if [ "$DEPLOYMENT_TYPE" == "alfresco" -o "$DEPLOYMENT_TYPE" == "both" -o "$DEPLOYMENT_TYPE" == "alfresco_master" ]
 then
-    # Updated xmppIntegration to use a host-specific resource value for openfire
-    echo "Updating host-specific XMPP configuration"
-    sed -i "s/depends-on=\"com.surevine.alfresco.presence.xmpp.XMPPConfiguration\">/depends-on=\"com.surevine.alfresco.presence.xmpp.XMPPConfiguration\"><property name=\"resource\"><value>Smack-Space-$(hostname)<\/value><\/property>/" $(find /opt/alfresco/tomcat/webapps/ -name xmppIntegration.xml)
-
     if [ "$HTML_SANITISER_CONFIG" == "default" ]
     then
         echo "Using default HTML Sanitisation Configuration"
