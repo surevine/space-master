@@ -19,7 +19,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #-------------------------------------------------------------------------------
-PRESENCE_JAR_FILE=./alfresco_presence-1.1.8.jar
+PRESENCE_JAR_FILE=./alfresco_presence-1.1.10.jar
 PRESENCE_JAR_FILE_DEST=/opt/alfresco/tomcat/webapps/alfresco/WEB-INF/lib/
 
 echo "        Perfoming pre-patch checks"
