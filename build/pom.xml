@@ -84,7 +84,7 @@
 		<dependency>
 			<groupId>com.surevine.alfresco</groupId>
 			<artifactId>share.esl.module</artifactId>
-			<version>1.7.4</version>
+			<version>1.7.5</version>
 			<type>amp</type>
 		</dependency>
 		<dependency>
