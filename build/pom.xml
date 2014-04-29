@@ -24,7 +24,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.surevine.alfresco</groupId>
     <artifactId>svthemedalfresco</artifactId>
-    <version>3.3.1-SNAPSHOT</version>
+    <version>3.3.2-SNAPSHOT</version>
     <packaging>zip</packaging>
 
 	<properties>
