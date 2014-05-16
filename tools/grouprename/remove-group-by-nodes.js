@@ -22,6 +22,34 @@
 var count = 0;
 
 function removeGroup(collection, group) {
+    if (!collection) collection = [];
+
+    logger.log("RemoveGroup:        Removing Group "+group+" from collection "+collection+" with "+collection.length+" elements");
+    
+    if (collection.length > 0) {
+    	logger.log("RemoveGroup:        Collection has pre-existing groups")
+
+    	var rV=[];
+    	var hasChanges=false;
+    	for (var i=0; i < collection.length; i++) {
+    		if (collection[i] == group) {
+    		    logger.log("RemoveGroup:        Removing group "+collection[i]);
+    		    hasChanges=true;
+    		    count++;
+    		}
+    		else {
+    			rV.push(collection[i]);
+    		    logger.log("RemoveGroup:        Maintaining group "+collection[i]);
+    		}
+    	}
+    	return {"hasChanges": hasChanges, "content": rV};
+    } else {
+        return {"hasChanges": true, "content": collection};
+
+    }
+}
+
+function old_removeGroup(collection, group) {
     if (collection.indexOf(",") > -1) {
         var items = collection.split(",");
 
