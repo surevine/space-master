@@ -30,10 +30,10 @@ function main() {
 	var results;
 
 	if (targetType === "closed") {
-		logger.log("Searching for closed group: \@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}closedMarkings:\""+targetGroup+"\""});
+		logger.log("Searching for closed group: \@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}closedMarkings:\""+targetGroup+"\"");
 		results = search.query({"query": "\@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}closedMarkings:\""+targetGroup+"\""});
-	} else if (targetType === organisations{
-		logger.log("Searching for closed group: \@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}organisations:\""+targetGroup+"\""};
+	} else if (targetType === organisations) {
+		logger.log("Searching for closed group: \@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}organisations:\""+targetGroup+"\"}");
 		results = search.query({"query": "\@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}organisations:\""+targetGroup+"\""});
 	} else {
 		logger.log("Please specify a valid target type");
@@ -46,7 +46,7 @@ function main() {
 	var count = 0;
 
 	for (var i = 0; i < results.length; i++) {
-		if (skipNodes.indexOf(results[i].nodeRef) > -1 {
+		if (skipNodes.indexOf(results[i].nodeRef) > -1 ) {
 			logger.warn("Skipping nodeRef: " + results[i].nodeRef);
 			continue;
 		}
