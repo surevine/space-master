@@ -30,7 +30,7 @@ function main() {
 	var results;
 
 	if (targetType === "closed") {
-		logger.log("Searching for closed group: \@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}closedMarkings:\""+targetGroup+"\""};
+		logger.log("Searching for closed group: \@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}closedMarkings:\""+targetGroup+"\""});
 		results = search.query({"query": "\@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}closedMarkings:\""+targetGroup+"\""});
 	} else if (targetType === organisations{
 		logger.log("Searching for closed group: \@\\{http\\://www.alfresco.org/model/enhancedSecurity/0.3\\}organisations:\""+targetGroup+"\""};
